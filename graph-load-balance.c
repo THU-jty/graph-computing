@@ -274,11 +274,11 @@ void bfs(dist_graph_t *graph, index_t s, index_t* pred){
                 int bg = belong(v);
                 if( vis[v] == -1 ){
                     vis[v] = u;
+                    send_flag = 1;
                     if( bg != id ){
                         send_buf[bg][ send_cnt[bg]*2 ] = v;
                         send_buf[bg][ send_cnt[bg]*2+1 ] = u;
                         send_cnt[bg] ++;
-                        send_flag = 1;
                     }
                     else{
                         queue_g[ send_cnt[bg] ] = v;
@@ -367,14 +367,18 @@ void bfs(dist_graph_t *graph, index_t s, index_t* pred){
         queue_g = queue_f;
         queue_f = tmp;
     } while(1);   
-    DEBUG("%d it %d\n", id, ite);
+    DEBUG("%d it %d sta %d\n", id, ite, s);
     if( id == 0 ){
-        //printf("iterations %d\n", ite);
+        //printf("iterations %d st %d\n", ite, s);
     }
     for( int i = 0; i < local_v; i ++ ){
         pred[i] = vis[i+offset_v];
     }
-
+    // if( id == 0 && s == 179840 ){
+    //     for( int i = 0; i < local_v; i ++ ){
+    //         //printf("%d %d\n", i+offset_v, vis[i+offset_v]);
+    //     }
+    // }
 }
 
 
@@ -466,11 +470,11 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
                 if( dis[v] > dis[u] + e_weight[e] ){                  
                     vis[v] = u;
                     dis[v] = dis[u] + e_weight[e];
+                    send_flag = 1;
                     if( bg != id ){
                         if( stp[v] != ite ){
                             send_buf[bg][ send_cnt[bg]*2 ] = v;
                             send_cnt[bg] ++;
-                            send_flag = 1;
                             stp[v] = ite;
                         }
                     }
