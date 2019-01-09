@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <mpi.h>
+#include <cuda.h>
 #include "common.h"
 #include "utils.h"
 #define mem0(a,b) for(int kk=0;kk<b;kk++){a[kk]=0;}
@@ -271,10 +272,10 @@ void bfs(dist_graph_t *graph, index_t s, index_t* pred){
             int end = v_pos[u+1-offset_v] - v_pos[0];
             for(int e = begin; e < end; ++e) {
                 int v = e_dst[e];
-                int bg = belong(v);
                 if( vis[v] == -1 ){
                     vis[v] = u;
                     send_flag = 1;
+                    int bg = belong(v);
                     if( bg != id ){
                         send_buf[bg][ send_cnt[bg]*2 ] = v;
                         send_buf[bg][ send_cnt[bg]*2+1 ] = u;
@@ -352,6 +353,7 @@ void bfs(dist_graph_t *graph, index_t s, index_t* pred){
                         //queue_f[size_f++] = v;
                         vis[v] = recv_buf[i][j*2+1];
                         //printf("%d : %d %d\n", id, v, recv_buf[i][j*2+1]);
+                        vis[ recv_buf[i][j*2+1] ] = 1;
                     }
                 }
             }
@@ -466,11 +468,11 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
             int end = v_pos[u+1-offset_v] - v_pos[0];
             for(int e = begin; e < end; ++e) {
                 int v = e_dst[e];
-                int bg = belong(v);
                 if( dis[v] > dis[u] + e_weight[e] ){                  
                     vis[v] = u;
                     dis[v] = dis[u] + e_weight[e];
                     send_flag = 1;
+                    int bg = belong(v);
                     if( bg != id ){
                         if( stp[v] != ite ){
                             send_buf[bg][ send_cnt[bg]*2 ] = v;
