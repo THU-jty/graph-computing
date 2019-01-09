@@ -17,8 +17,9 @@ typedef struct {
 nvGraph_t* create_nvgraph(const dist_graph_t *graph, traverse_type_t traverse_type);
 
 int *vis, *dis;
-int *nowq, *nxtq;
+int *nowq, *nxtq, *lock, *turn;
 int *v_pos, *e_dst;
+float *e_weight, *ans, *nxtans;
 void preprocess(dist_graph_t *graph, traverse_type_t traverse_type) {
     if(graph->p_num > 1) {
         printf("not implemented. Only support single-process.\n");
@@ -29,12 +30,18 @@ void preprocess(dist_graph_t *graph, traverse_type_t traverse_type) {
     M = graph->global_e;
     cudaMalloc((void**)&v_pos, sizeof(int)*N );
     cudaMalloc((void**)&e_dst, sizeof(int)*M );
+    cudaMalloc((void**)&e_weight, sizeof(float)*M );
     cudaMalloc((void**)&vis, sizeof(int)*N );
     cudaMalloc((void**)&dis, sizeof(int)*N );
+    cudaMalloc((void**)&ans, sizeof(float)*N );
+    cudaMalloc((void**)&nxtans, sizeof(float)*N );
     cudaMalloc((void**)&nowq, sizeof(int)*N );
     cudaMalloc((void**)&nxtq, sizeof(int)*N );
+    cudaMalloc((void**)&lock, sizeof(int)*N );
+    cudaMalloc((void**)&turn, sizeof(int)*N );
     cudaMemcpy( v_pos, graph->v_pos, sizeof(int)*N, cudaMemcpyHostToDevice );
     cudaMemcpy( e_dst, graph->e_dst, sizeof(int)*M, cudaMemcpyHostToDevice );
+    cudaMemcpy( e_weight, graph->e_weight, sizeof(float)*M, cudaMemcpyHostToDevice );
 }
 
 nvGraph_t* create_nvgraph(const dist_graph_t *graph, traverse_type_t traverse_type) {
@@ -116,8 +123,6 @@ __global__ void bfs_kernel( int *v_pos, int *e_dst,
 void bfs(dist_graph_t *graph, index_t s, index_t* pred) { 
     if(graph->p_id == 0){
         nvGraph_t* nvgraph = (nvGraph_t*)graph->additional_info;
-        cudaMalloc((void**)&vis, sizeof(int)*N );
-        cudaMalloc((void**)&dis, sizeof(int)*N );
         int *changed, cnt = 0, tmp = 0, tt = 0;
         cudaMalloc((void **) &changed, sizeof(int));
         cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
@@ -130,14 +135,12 @@ void bfs(dist_graph_t *graph, index_t s, index_t* pred) {
             );
             cnt ++;
             cudaMemcpy( &tmp, changed, sizeof(int), cudaMemcpyDeviceToHost );
-            printf("ite %d %d\n", cnt, tmp);
+            //printf("ite %d %d\n", cnt, tmp);
             cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
         }while(tmp);
 
         cudaMemcpy(pred, vis, sizeof(int)*N, cudaMemcpyDeviceToHost);
-        cudaFree(vis);
-        cudaFree(dis);
-        printf("iteration %d\n", cnt);
+        //printf("iteration %d %d root %d\n", cnt, s, pred[s]);
     }
 }
 /*
@@ -147,12 +150,147 @@ void bfs(dist_graph_t *graph, index_t s, index_t* pred) {
         pred[s] = s;
 */
 
+__global__ void sssp_init_ans( float *ans, float *nxtans, int *lock, int *turn, int N )
+{
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    if( x < N ){
+        nxtans[x] = ans[x];
+        lock[x] = turn[x] = 0;
+    }
+}
+
+__global__ void init_sssp( int *vis, float *ans, 
+                           int *nowq, int *nxtq, int *lock,
+                           int N, int s )
+{
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    if( x < N ){
+        if( x == s ){
+            vis[x] = x;
+            ans[x] = 0.0;
+            nowq[x] = 1;
+            nxtq[x] = 0;
+        }
+        else{
+            vis[x] = -1;
+            ans[x] = INFINITY;
+            nowq[x] = nxtq[x] = 0;
+        }
+        lock[x] = 0;
+    }
+}
+
+__global__ void sssp_kernel( int *v_pos, int *e_dst, float *e_weight,
+                             int *vis, float *ans, float *nxtans,
+                             int *nowq, int *nxtq, int *lock, int *turn,
+                             int cnt, int N, int *changed )
+{
+    int x = threadIdx.x + blockDim.x * blockIdx.x;
+    int flag = 0;
+    __shared__ int fl;
+    if( threadIdx.x == 0 ) fl = 0;
+    //__syncthreads();
+    if( x < N ){
+        if( nowq[x] == cnt ){
+            int begin = v_pos[x] - v_pos[0];
+            int end = v_pos[x+1] - v_pos[0];
+            for(int e = begin; e < end; ++e) {
+                int v = e_dst[e];
+                if( nxtans[v] > ans[x] + e_weight[e] ){
+                    // lock
+                    int myturn = atomicAdd( &lock[v], 1 );
+                    while( turn[v] != myturn );
+
+                    nxtans[v] = ans[x] + e_weight[e];
+                    vis[v] = x;
+                    nxtq[v] = cnt+1;
+                    flag = 1;
+                    
+                    // unlock
+                    turn[v] ++;
+                }
+            }   
+        } 
+    }
+    if( flag ){
+        fl = 1;
+    }
+    __syncthreads();
+    if( threadIdx.x == 0 && fl ) *changed = 1;
+}
+
 void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
     if(graph->p_id == 0){
+        int *sp = (int*)malloc( sizeof(int)*N );
+        float *fp = (float*)malloc( sizeof(float)*N );
         nvGraph_t* nvgraph = (nvGraph_t*)graph->additional_info;
-        nvgraphSssp(nvgraph->handle, nvgraph->graph, 0,  &s, 0);
-        nvgraphGetVertexData(nvgraph->handle, nvgraph->graph, (void*)distance, 0);
-        printf("not implemented. nvgraphSssp() does not calculate the predecessors\n");
+        int *changed, cnt = 0, tmp = 0, tt = 0;
+        cudaMalloc((void **) &changed, sizeof(int));
+        cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
+        dim3 grid_size (ceiling(N,128));
+        dim3 block_size (128);
+        for( int i = 0; i < M; i ++ ){
+            if( graph->e_weight[i] < 0.0 ) printf("%d %f\n", i, graph->e_weight[i] );
+        }
+        init_sssp<<<grid_size, block_size>>>( vis, ans, nowq, nxtq, lock, N, s );
+        do{
+            cnt ++;
+            sssp_init_ans<<<grid_size, block_size>>>( ans, nxtans, lock, turn, N );
+            printf("ite %d ", cnt);
+            cudaMemcpy( sp, nowq, sizeof(int)*N, cudaMemcpyDeviceToHost );
+            int num = 0;
+            for( int i = 0; i < N; i ++ ){
+                if( sp[i] == cnt ){
+                    printf("%d ", i);
+                    num ++;
+                }
+            }
+            printf("\nnum %d\n", num);
+            
+            printf("ans\n");
+            num = 0;
+            cudaMemcpy( fp, ans, sizeof(float)*N, cudaMemcpyDeviceToHost );
+            for( int i = 0; i < N; i ++ ){
+                if( fp[i] != INFINITY ){
+                    printf("%d : %f\n", i, fp[i]);
+                    num ++;
+                }
+            }
+            printf("num %d\n", num);
+
+            // printf("nxtans\n");
+            // num = 0;
+            // cudaMemcpy( fp, nxtans, sizeof(float)*N, cudaMemcpyDeviceToHost );
+            // for( int i = 0; i < N; i ++ ){
+            //     if( fp[i] != INFINITY ){
+            //         printf("%d : %f\n", i, fp[i]);
+            //         num ++;
+            //     }
+            // }
+            // printf("num %d\n", num);
+
+            sssp_kernel<<<grid_size, block_size>>>(
+                v_pos, e_dst, e_weight, vis, ans, nxtans,
+                nowq, nxtq, lock, turn, cnt, N, changed
+            );
+            // int debug[10];
+            // cudaMemcpy( debug, lock, sizeof(int)*2, cudaMemcpyDeviceToHost );
+            // printf("d0 %d d1 %d\n", debug[0], debug[1]);
+
+            cudaMemcpy( &tmp, changed, sizeof(int), cudaMemcpyDeviceToHost );
+            printf("ite %d %d\n", cnt, tmp);
+            cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
+            int *tq = nowq;
+            nowq = nxtq;
+            nxtq = tq;
+            float *tp = ans;
+            ans = nxtans;
+            nxtans = tp;
+            if( cnt >= 20 ) break;
+        }while(tmp);
+
+        cudaMemcpy(pred, vis, sizeof(int)*N, cudaMemcpyDeviceToHost);
+        cudaMemcpy(distance, ans, sizeof(float)*N, cudaMemcpyDeviceToHost);
+        printf("iteration %d\n", cnt);
     }
-    fatal_error(11);
 }
