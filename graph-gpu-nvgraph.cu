@@ -79,52 +79,66 @@ __global__ void init( int *vis, int *dis, int N, int s )
 }
 
 __global__ void bfs_kernel( int *v_pos, int *e_dst, 
-                             int *vis, int *dis, int cnt, 
-                             int N, int *changed )
+                             int *vis, int *dis,
+                             int *nowq, int *nxtq, 
+                             int now_size, int *nxt_size )
 {
     int x = threadIdx.x + blockDim.x * blockIdx.x;
-    if( x >= N ){
-        return ;
-    }
-    if( dis[x] == cnt ){
-        int begin = v_pos[x] - v_pos[0];
-        int end = v_pos[x+1] - v_pos[0];
+    if( x < now_size ){
+        int u = nowq[x];
+        int begin = v_pos[u] - v_pos[0];
+        int end = v_pos[u+1] - v_pos[0];
         for(int e = begin; e < end; ++e) {
             int v = e_dst[e];
-            if( vis[v] == -1 ){
-                vis[v] = x;
-                dis[v] = dis[x] + 1;
-                *changed = 1;
+            if( atomicCAS( &vis[v], -1, u ) == -1 ){
+                int position = atomicAdd(nxt_size, 1);
+                nxtq[position] = v;
             }
         }   
-    } 
+    }
 }
 
+int *nowq, *nxtq;
 void bfs(dist_graph_t *graph, index_t s, index_t* pred) { 
     if(graph->p_id == 0){
         nvGraph_t* nvgraph = (nvGraph_t*)graph->additional_info;
         cudaMalloc((void**)&vis, sizeof(int)*N );
         cudaMalloc((void**)&dis, sizeof(int)*N );
-        int *changed, cnt = 0, tmp = 0, tt = 0;
-        cudaMalloc((void **) &changed, sizeof(int));
-        cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
+        cudaMalloc((void**)&nowq, sizeof(int)*N );
+        cudaMalloc((void**)&nxtq, sizeof(int)*N );
+        int *size, cnt = 0, tmp = s, tt = 1, ite = 0;
+        cudaMalloc((void **) &size, sizeof(int));
+        cudaMemcpy( size, &cnt, sizeof(int), cudaMemcpyHostToDevice );
+        cudaMemcpy( nowq, &tmp, sizeof(int), cudaMemcpyHostToDevice );
+
+        cudaMemcpy( &tmp, nowq, sizeof(int), cudaMemcpyDeviceToHost );
+
         dim3 grid_size (ceiling(N,1024));
         dim3 block_size (1024);
         init<<<grid_size, block_size>>>( vis, dis, N, s );
+        tmp = 1; tt = 0;
+        int st = 0;
+        //printf("queue in size %d\t", tmp);
         do{
+            ite ++;
             bfs_kernel<<<grid_size, block_size>>>(
-                v_pos, e_dst, vis, dis, cnt, N, changed
+                v_pos, e_dst, vis, dis,
+                nowq, nxtq, tmp, size
             );
-            cnt ++;
-            cudaMemcpy( &tmp, changed, sizeof(int), cudaMemcpyDeviceToHost );
-            //printf("%d %d\n", tmp, tt);
-            cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
+            cudaMemcpy( &tmp, size, sizeof(int), cudaMemcpyDeviceToHost );
+            //printf("%d queue out size %d\n", ite, tmp);
+            cudaMemcpy( size, &tt, sizeof(int), cudaMemcpyHostToDevice );
+            int *tq = nowq;
+            nowq = nxtq;
+            nxtq = tq;
         }while(tmp);
 
         cudaMemcpy(pred, vis, sizeof(int)*N, cudaMemcpyDeviceToHost);
         cudaFree(vis);
         cudaFree(dis);
-        //printf("iteration %d\n", cnt);
+        cudaFree(nowq);
+        cudaFree(nxtq);
+        //printf("iteration %d\n", ite);
     }
 }
 
