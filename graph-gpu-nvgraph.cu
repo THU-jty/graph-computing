@@ -187,6 +187,7 @@ __global__ void sssp_kernel( int *v_pos, int *e_dst, float *e_weight,
 {
     int x = threadIdx.x + blockDim.x * blockIdx.x;
     int flag = 0;
+	int y = 0;
     __shared__ int fl;
     if( threadIdx.x == 0 ) fl = 0;
     //__syncthreads();
@@ -196,10 +197,18 @@ __global__ void sssp_kernel( int *v_pos, int *e_dst, float *e_weight,
             int end = v_pos[x+1] - v_pos[0];
             for(int e = begin; e < end; ++e) {
                 int v = e_dst[e];
-                if( nxtans[v] > ans[x] + e_weight[e] ){
+				// int myturn = atomicAdd( &lock[v], 1 );
+				// while( turn[v] != myturn ){
+					// for( int i = 0; i < threadIdx.x; i ++ ) y ++;
+				// }
+				
+				while( lock[v] == 1 ){
+					if( atomicCAS( &lock[v], 0, 1 ) == 0 ) break;
+				}
+				//while( atomicCAS( &lock[v], 0, 1 ) != 0 );
+				
+				if( nxtans[v] > ans[x] + e_weight[e] ){
                     // lock
-                    int myturn = atomicAdd( &lock[v], 1 );
-                    while( turn[v] != myturn );
 
                     nxtans[v] = ans[x] + e_weight[e];
                     vis[v] = x;
@@ -207,8 +216,10 @@ __global__ void sssp_kernel( int *v_pos, int *e_dst, float *e_weight,
                     flag = 1;
                     
                     // unlock
-                    turn[v] ++;
                 }
+				
+				atomicExch( &lock[v], 0 );
+				//turn[v] ++;
             }   
         } 
     }
@@ -219,6 +230,8 @@ __global__ void sssp_kernel( int *v_pos, int *e_dst, float *e_weight,
     if( threadIdx.x == 0 && fl ) *changed = 1;
 }
 
+int T = 128;
+
 void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
     if(graph->p_id == 0){
         int *sp = (int*)malloc( sizeof(int)*N );
@@ -227,10 +240,10 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
         int *changed, cnt = 0, tmp = 0, tt = 0;
         cudaMalloc((void **) &changed, sizeof(int));
         cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
-        dim3 grid_size (ceiling(N,128));
-        dim3 block_size (128);
+        dim3 grid_size (ceiling(N,T));
+        dim3 block_size (T);
         for( int i = 0; i < M; i ++ ){
-            if( graph->e_weight[i] < 0.0 ) printf("%d %f\n", i, graph->e_weight[i] );
+            if( graph->e_weight[i] <= 0.0 ) printf("%d %f\n", i, graph->e_weight[i] );
         }
         init_sssp<<<grid_size, block_size>>>( vis, ans, nowq, nxtq, lock, N, s );
         do{
@@ -241,22 +254,22 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
             int num = 0;
             for( int i = 0; i < N; i ++ ){
                 if( sp[i] == cnt ){
-                    printf("%d ", i);
+                    //printf("%d ", i);
                     num ++;
                 }
             }
-            printf("\nnum %d\n", num);
+            printf(" num %d\n", num);
             
-            printf("ans\n");
-            num = 0;
-            cudaMemcpy( fp, ans, sizeof(float)*N, cudaMemcpyDeviceToHost );
-            for( int i = 0; i < N; i ++ ){
-                if( fp[i] != INFINITY ){
-                    printf("%d : %f\n", i, fp[i]);
-                    num ++;
-                }
-            }
-            printf("num %d\n", num);
+            // printf("ans\n");
+            // num = 0;
+            // cudaMemcpy( fp, ans, sizeof(float)*N, cudaMemcpyDeviceToHost );
+            // for( int i = 0; i < N; i ++ ){
+                // if( fp[i] != INFINITY ){
+                    // printf("%d : %f\n", i, fp[i]);
+                    // num ++;
+                // }
+            // }
+            // printf("num %d\n", num);
 
             // printf("nxtans\n");
             // num = 0;
@@ -278,7 +291,7 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
             // printf("d0 %d d1 %d\n", debug[0], debug[1]);
 
             cudaMemcpy( &tmp, changed, sizeof(int), cudaMemcpyDeviceToHost );
-            printf("ite %d %d\n", cnt, tmp);
+            //printf("ite %d %d\n", cnt, tmp);
             cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
             int *tq = nowq;
             nowq = nxtq;
