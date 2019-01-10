@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <mpi.h>
-#include <cuda.h>
 #include "common.h"
 #include "utils.h"
 #define mem0(a,b) for(int kk=0;kk<b;kk++){a[kk]=0;}
@@ -17,7 +16,7 @@
 
 const char* version_name = "A reference version of edge-based load balancing";
 const int T = 70;
-int loc[T], NUM, id, N, M, *rev;
+int loc[T], NUM, id, N, M, *rev, *bt_recv, *mark;
 
 /* C++ std::lower_bound */
 int lower_bound(const index_t* a, int left, int right, index_t value) {
@@ -142,6 +141,8 @@ void preprocess(dist_graph_t *graph, traverse_type_t traverse_type) {
     p[6] = malloc( graph->local_v*NUM*sizeof(float) );
     p[7] = malloc( graph->global_v*sizeof(float) );
     p[8] = malloc( graph->global_v*sizeof(int) );
+    mark = (int*)malloc( graph->global_v*sizeof(int) );
+    bt_recv = (int*)malloc( (graph->global_v*2)*sizeof(int) );
     rev = (int*)malloc( (graph->global_v)*sizeof(int) );
     int tmp[1000];
     for( int i = 0; i < graph->p_num; i ++ ){
@@ -175,6 +176,7 @@ void preprocess(dist_graph_t *graph, traverse_type_t traverse_type) {
 }
 
 void destroy_additional_info(void *additional_info) {
+    free(bt_recv);
 }
 
 inline int belong( int v )
@@ -261,113 +263,165 @@ void bfs(dist_graph_t *graph, index_t s, index_t* pred){
     int ite = 0;
     do {
         ite ++;
-        DEBUG("%d it %d qsize %d\n", id, ite, size_f);
+        //printf("%d it %d qsize %d\n", id, ite, size_f);
         mem0( send_cnt, NUM );
         index_t* tmp;
         int size_g = 0;
         int send_flag = 0;
-        for(int i = 0; i < size_f; ++i){
-            int u = queue_f[i];
-            int begin = v_pos[u-offset_v] - v_pos[0];
-            int end = v_pos[u+1-offset_v] - v_pos[0];
-            for(int e = begin; e < end; ++e) {
-                int v = e_dst[e];
-                if( vis[v] == -1 ){
-                    vis[v] = u;
-                    send_flag = 1;
-                    int bg = belong(v);
-                    if( bg != id ){
-                        send_buf[bg][ send_cnt[bg]*2 ] = v;
-                        send_buf[bg][ send_cnt[bg]*2+1 ] = u;
-                        send_cnt[bg] ++;
-                    }
-                    else{
-                        queue_g[ send_cnt[bg] ] = v;
-                        send_cnt[bg] ++;
-                    }
-                }
-            }
-        }
-        DEBUG("%d it %d exec over\n", id, ite);
-	    
-        // MPI_Barrier(MPI_COMM_WORLD);
-        // DEBUG("send id %d it %d: ", id, ite);
-        // for( int i = 0; i < NUM; i ++ ){
-        //      DEBUG("%d ", send_cnt[i]);
-        // }
-		// DEBUG("\n");
-        // MPI_Barrier(MPI_COMM_WORLD);
-        
-        //notify all nodes over or not
+
+        send_flag = size_f;
         if( NUM != 1 )
         MPI_Allgather( &send_flag, 1, MPI_INT,
         recv_flag, 1, MPI_INT, MPI_COMM_WORLD );
-        for( i = 0; i < NUM; i ++ ){
-            if( recv_flag[i] != 0 ) break;
-        }
-        if( i == NUM && NUM != 1 ){
-            DEBUG("%d it %d end!!!\n", id, ite);
-            break;
-        }
-        if( NUM == 1 && size_f == 0 ){
-            DEBUG("%d it %d end!!!\n", id, ite);
-            break;
-        }
-
-        int send_self = 0;
-        swap( &send_self, &send_cnt[id] );
-        if( NUM != 1 )
-        MPI_Alltoall(send_cnt,1,MPI_INT,
-			recv_cnt,1,MPI_INT,MPI_COMM_WORLD);
-		DEBUG("%d it %d cnt over\n", id, ite);
-        // MPI_Barrier(MPI_COMM_WORLD);
-		// DEBUG("recv id %d it %d: ", id, ite);
-		// for( int i = 0; i < NUM; i ++ ){
-        //     DEBUG("%d ", recv_cnt[i]);
-        // }
-        // DEBUG("\n");
-        // MPI_Barrier(MPI_COMM_WORLD);
-		
-		for( int i = 0; i < NUM; i ++ ){
-            send_cnt[i] *= 2;
-            recv_cnt[i] *= 2;
-        }
-        if( NUM != 1 )
-        MPI_Alltoallv(send_buf[0],send_cnt,sdis,MPI_INT,
-                    recv_buf[0],recv_cnt,rdis,MPI_INT,
-                    MPI_COMM_WORLD);
-        //printf("ppp %d\n", id);
-		// for( int i = 0; i < NUM; i ++ ){
-		// 	for( int j = 0; j < 10; j ++ ){
-		// 		printf("id %d : %d %d %d\n", id, i, j, recv_buf[i][j]);
-		// 	}
-		// }
-        DEBUG("%d it %d data over\n", id, ite);
-        size_f = 0;
+        int sum = 0;
         for( int i = 0; i < NUM; i ++ ){
-            if( i != id ){
-                for( int j = 0; j < recv_cnt[i]/2; j ++ ){
-                    int v = recv_buf[i][j*2];
-                    if( vis[v] == -1 ){
-                        queue_g[send_self++] = v;
-                        //queue_f[size_f++] = v;
-                        vis[v] = recv_buf[i][j*2+1];
-                        //printf("%d : %d %d\n", id, v, recv_buf[i][j*2+1]);
-                        vis[ recv_buf[i][j*2+1] ] = 1;
+            sum += recv_flag[i];
+        }
+        if( NUM == 1 ) sum = size_f;
+        if( sum == 0 ) break;
+        if( sum > N/10 ){
+            //printf("%d bottom\n", id);
+            if( NUM != 1 ){
+                MPI_Allgatherv( queue_f, size_f, MPI_INT,
+                bt_recv, recv_flag, sdis, MPI_INT, MPI_COMM_WORLD );
+            }
+            //printf("%d gather\n", id);
+            for( int i = 0; i < NUM; i ++ ){
+                if( i == id ) continue;
+                for( int j = 0; j < recv_flag[i]; j ++ ){
+                    if( bt_recv[j+sdis[i]] < 0 || bt_recv[j+sdis[i]] >= N ) printf("%d\n", bt_recv[j+sdis[i]]);
+                    vis[bt_recv[j+sdis[i]]] = 0;
+                }
+            }
+            //printf("%d update\n", id);
+            for(int i = offset_v; i < offset_v+local_v; ++i){
+                int u = i;
+                if( vis[u] != -1 ) continue;
+                int begin = v_pos[u-offset_v] - v_pos[0];
+                int end = v_pos[u+1-offset_v] - v_pos[0];
+                for(int e = begin; e < end; ++e) {
+                    int v = e_dst[e];
+                    if( vis[v] != -1 ){
+                        //vis[u] = v;
+                        queue_g[ size_g++ ] = u;
+                        mark[u] = v;
+                        break;
                     }
                 }
             }
-            // else{
-            //     for( int j = 0; j < send_self; j ++ ){
-            //         int v = send_buf[i][j];
-            //         queue_f[size_f++] = v;
-            //     }
-            // }
+            for( int i = 0; i < size_g; i ++ ){
+                vis[ queue_g[i] ] = mark[ queue_g[i] ];
+            }
+            tmp = queue_g;
+            queue_g = queue_f;
+            queue_f = tmp;
+            size_f = size_g;
         }
-        size_f = send_self;
-        tmp = queue_g;
-        queue_g = queue_f;
-        queue_f = tmp;
+        else{
+            send_flag = 0;
+            for(int i = 0; i < size_f; ++i){
+                int u = queue_f[i];
+                int begin = v_pos[u-offset_v] - v_pos[0];
+                int end = v_pos[u+1-offset_v] - v_pos[0];
+                for(int e = begin; e < end; ++e) {
+                    int v = e_dst[e];
+                    if( vis[v] == -1 ){
+                        vis[v] = u;
+                        send_flag = 1;
+                        int bg = belong(v);
+                        if( bg != id ){
+                            send_buf[bg][ send_cnt[bg]*2 ] = v;
+                            send_buf[bg][ send_cnt[bg]*2+1 ] = u;
+                            send_cnt[bg] ++;
+                        }
+                        else{
+                            queue_g[ send_cnt[bg] ] = v;
+                            send_cnt[bg] ++;
+                        }
+                    }
+                }
+            }
+            DEBUG("%d it %d exec over\n", id, ite);
+            
+            // MPI_Barrier(MPI_COMM_WORLD);
+            // DEBUG("send id %d it %d: ", id, ite);
+            // for( int i = 0; i < NUM; i ++ ){
+            //      DEBUG("%d ", send_cnt[i]);
+            // }
+            // DEBUG("\n");
+            // MPI_Barrier(MPI_COMM_WORLD);
+            
+            //notify all nodes over or not
+            // if( NUM != 1 )
+            // MPI_Allgather( &send_flag, 1, MPI_INT,
+            // recv_flag, 1, MPI_INT, MPI_COMM_WORLD );
+            // for( i = 0; i < NUM; i ++ ){
+            //     if( recv_flag[i] != 0 ) break;
+            // }
+            // if( i == NUM && NUM != 1 ){
+            //     DEBUG("%d it %d end!!!\n", id, ite);
+            //     break;
+            // }
+            // if( NUM == 1 && size_f == 0 ){
+            //     DEBUG("%d it %d end!!!\n", id, ite);
+            //     break;
+            // }
+
+            int send_self = 0;
+            swap( &send_self, &send_cnt[id] );
+            if( NUM != 1 )
+            MPI_Alltoall(send_cnt,1,MPI_INT,
+                recv_cnt,1,MPI_INT,MPI_COMM_WORLD);
+            DEBUG("%d it %d cnt over\n", id, ite);
+            // MPI_Barrier(MPI_COMM_WORLD);
+            // DEBUG("recv id %d it %d: ", id, ite);
+            // for( int i = 0; i < NUM; i ++ ){
+            //     DEBUG("%d ", recv_cnt[i]);
+            // }
+            // DEBUG("\n");
+            // MPI_Barrier(MPI_COMM_WORLD);
+            
+            for( int i = 0; i < NUM; i ++ ){
+                send_cnt[i] *= 2;
+                recv_cnt[i] *= 2;
+            }
+            if( NUM != 1 )
+            MPI_Alltoallv(send_buf[0],send_cnt,sdis,MPI_INT,
+                        recv_buf[0],recv_cnt,rdis,MPI_INT,
+                        MPI_COMM_WORLD);
+            //printf("ppp %d\n", id);
+            // for( int i = 0; i < NUM; i ++ ){
+            // 	for( int j = 0; j < 10; j ++ ){
+            // 		printf("id %d : %d %d %d\n", id, i, j, recv_buf[i][j]);
+            // 	}
+            // }
+            DEBUG("%d it %d data over\n", id, ite);
+            size_f = 0;
+            for( int i = 0; i < NUM; i ++ ){
+                if( i != id ){
+                    for( int j = 0; j < recv_cnt[i]/2; j ++ ){
+                        int v = recv_buf[i][j*2];
+                        if( vis[v] == -1 ){
+                            queue_g[send_self++] = v;
+                            //queue_f[size_f++] = v;
+                            vis[v] = recv_buf[i][j*2+1];
+                            //printf("%d : %d %d\n", id, v, recv_buf[i][j*2+1]);
+                            vis[ recv_buf[i][j*2+1] ] = 1;
+                        }
+                    }
+                }
+                // else{
+                //     for( int j = 0; j < send_self; j ++ ){
+                //         int v = send_buf[i][j];
+                //         queue_f[size_f++] = v;
+                //     }
+                // }
+            }
+            size_f = send_self;
+            tmp = queue_g;
+            queue_g = queue_f;
+            queue_f = tmp;
+        }
     } while(1);   
     DEBUG("%d it %d sta %d\n", id, ite, s);
     if( id == 0 ){
