@@ -8,7 +8,7 @@ const char* version_name = "nvGraph";
 int NUM, id;
 int N, M;
 int T = 256;
-int W = 64;
+int W = 1;
 
 typedef struct {
     nvgraphHandle_t handle;
@@ -46,7 +46,7 @@ void preprocess(dist_graph_t *graph, traverse_type_t traverse_type) {
     graph->additional_info = create_nvgraph(graph, traverse_type);
     N = graph->global_v;
     M = graph->global_e;
-    cudaMalloc((void**)&v_pos, sizeof(int)*N );
+    cudaMalloc((void**)&v_pos, sizeof(int)*(N+1) );
     cudaMalloc((void**)&e_dst, sizeof(int)*M );
     cudaMalloc((void**)&e_weight, sizeof(float)*M );
     cudaMalloc((void**)&vis, sizeof(int)*N );
@@ -58,8 +58,13 @@ void preprocess(dist_graph_t *graph, traverse_type_t traverse_type) {
     cudaMalloc((void**)&deg, sizeof(int)*N );
     cudaMalloc((void**)&buf, sizeof(float)*M );
     cudaMalloc((void**)&pre, sizeof(int)*M );
-    cudaMemcpy( v_pos, graph->v_pos, sizeof(int)*N, cudaMemcpyHostToDevice );
+    cudaMemcpy( v_pos, graph->v_pos, sizeof(int)*(N+1), cudaMemcpyHostToDevice );
     cudaMemcpy( e_dst, graph->e_dst, sizeof(int)*M, cudaMemcpyHostToDevice );
+    int self_cir = 0, mis_weight = 0, multi_edge = 0;
+    // for( int i = 0; i < N; i ++ ){
+    //     int begin = graph->v_pos[i];
+    //     int end = graph->v_pos[i+1];
+    // }
     if( traverse_type == SSSP ){
         cudaMemcpy( e_weight, graph->e_weight, sizeof(float)*M, cudaMemcpyHostToDevice );
 
@@ -114,7 +119,7 @@ void destroy_additional_info(void *additional_info) {
     cudaFree(e_dst);
 }
 
-__global__ void init_bfs( int *vis, int *dis, int N, int s )
+__global__ void init_bfs( int *vis, int *dis, int *nxtq, int N, int s )
 {
     int x = threadIdx.x + blockDim.x * blockIdx.x;
     if( x < N ){
@@ -123,18 +128,19 @@ __global__ void init_bfs( int *vis, int *dis, int N, int s )
             dis[x] = 0;
         }
         else vis[x] = dis[x] = -1;
+        nxtq[x] = -1;
     }
 }
 
 __global__ void bfs_kernel( int *v_pos, int *e_dst, 
-                             int *vis, int *dis, int cnt, 
+                             int *vis, int *dis, int *nxtq, int cnt, 
                              int N, int *changed )
 {
     int x = threadIdx.x + blockDim.x * blockIdx.x;
     int flag = 0;
     __shared__ int fl;
     if( threadIdx.x == 0 ) fl = 0;
-    //__syncthreads();
+    __syncthreads();
     if( x < N ){
         if( dis[x] == cnt ){
             int begin = v_pos[x];
@@ -143,7 +149,7 @@ __global__ void bfs_kernel( int *v_pos, int *e_dst,
                 int v = e_dst[e];
                 if( vis[v] == -1 ){
                     vis[v] = x;
-                    dis[v] = cnt + 1;
+                    nxtq[v] = cnt + 1;
                     flag = 1;
                 }
             }   
@@ -164,15 +170,18 @@ void bfs(dist_graph_t *graph, index_t s, index_t* pred) {
         cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
         dim3 grid_size (ceiling(N,T));
         dim3 block_size (T);
-        init_bfs<<<grid_size, block_size>>>( vis, dis, N, s );
+        init_bfs<<<grid_size, block_size>>>( vis, dis, nxtq, N, s );
         do{
             bfs_kernel<<<grid_size, block_size>>>(
-                v_pos, e_dst, vis, dis, cnt, N, changed
+                v_pos, e_dst, vis, dis, nxtq, cnt, N, changed
             );
             cnt ++;
             cudaMemcpy( &tmp, changed, sizeof(int), cudaMemcpyDeviceToHost );
             //printf("ite %d %d\n", cnt, tmp);
             cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
+            int *bfs = nxtq;
+            nxtq = dis;
+            dis = bfs;
         }while(tmp);
 
         cudaMemcpy(pred, vis, sizeof(int)*N, cudaMemcpyDeviceToHost);
