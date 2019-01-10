@@ -125,6 +125,7 @@ void bfs(dist_graph_t *graph, index_t s, index_t* pred){
     }
 }
 
+float *a, *b;
 /* sequential SPFA with bitmap */
 void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
     if(graph->p_id == 0){
@@ -137,11 +138,14 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
         uint8_t* bitmap_f = (uint8_t*)graph->additional_info;
         uint8_t* bitmap_g = bitmap_f + bitmap_size;
         bool not_empty_f = true;
+        b = (float*)malloc(sizeof(float)*N);
 
         for(int i = 0; i < local_v; ++i) {
             distance[i] = INFINITY;
+            b[i] = INFINITY;
             pred[i] = UNREACHABLE;
         }
+        a = distance;
         pred[s] = s;
         distance[s] = 0.0f;
         memset(bitmap_f, 0, bitmap_size);
@@ -165,8 +169,8 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
                             for(int e = begin; e < end; ++e) {
                                 int v = e_dst[e];
                                 
-                                if(distance[v] > distance[u] + e_weight[e]) {
-                                    distance[v] = distance[u] + e_weight[e];
+                                if(b[v] > a[u] + e_weight[e]) {
+                                    b[v] = a[u] + e_weight[e];
                                     pred[v] = u;
                                     bitmap_g[v >> 3] |= 1 << (v & 7);
                                     not_empty_g = true;
@@ -180,6 +184,11 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
             tmp = bitmap_f;
             bitmap_f = bitmap_g;
             bitmap_g = tmp;
+            for( int i = 0; i < N; i ++ ) b[i] = a[i];
+            float *tt = b;
+            b = a;
+            a = tt;
         } while(not_empty_f);
+        for( int i = 0; i < N; i ++ ) distance[i] = a[i];
     }
 }

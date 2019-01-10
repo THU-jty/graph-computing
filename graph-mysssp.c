@@ -128,6 +128,7 @@ void bfs(dist_graph_t *graph, index_t s, index_t* pred){
     }
 }
 
+float *a, *b;
 /* sequential SPFA with bitmap */
 void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
     if(graph->p_id == 0){
@@ -139,31 +140,37 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
         int* queue_f = (int*)graph->additional_info;
         int* queue_g = queue_f + global_v;
         int size_f = 0, size_g = 0;
-
+        int N = global_v;
+        b = (float*)malloc(sizeof(float)*N);
         for(int i = 0; i < local_v; ++i) {
             distance[i] = INFINITY;
+            b[i] = INFINITY;
             pred[i] = UNREACHABLE;
             vis[i] = 0;
         }
         pred[s] = s;
-        distance[s] = 0.0f;
+        distance[s] = b[s] = 0.0f;
         queue_f[ size_f++ ] = s;
+        a = distance;
 
         int it = 0;
         do {
             it ++;
             int* tmp;
             size_g = 0;
-            printf("qsize %d\n", size_f);
+            //printf("it %d num %d\n", it, size_f);
+            for( int i = 0; i < N; i ++ ) b[i] = a[i];
             for( int i = 0; i < size_f; i ++ ){
                 int u = queue_f[i];
                 int begin = v_pos[u] - v_pos[0];
                 int end = v_pos[u + 1] - v_pos[0];
                 for(int e = begin; e < end; ++e) {
                     int v = e_dst[e];
-                    
-                    if(distance[v] > distance[u] + e_weight[e]) {
-                        distance[v] = distance[u] + e_weight[e];
+                    if(b[v] > a[u] + e_weight[e]) {
+                        if( v == 68 && it == 2 ){
+                            //printf("before %f after %f src %d dis %f wgt %f\n", b[v], a[u]+e_weight[e], u, a[u], e_weight[e]);
+                        }
+                        b[v] = a[u] + e_weight[e];
                         pred[v] = u;
                         if( vis[v] != it ){
                             vis[v] = it;
@@ -180,9 +187,12 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
             int tt = size_f;
             size_f = size_g;
             size_g = tt;
+            for( int i = 0; i < N; i ++ ) printf("%d %6d %.6f\n", it, i, b[i]);
+
+            float *tsp = b;
+            b = a;
+            a = tsp;
         } while(size_f > 0);
-        for( int i = 0; i < local_v; i ++ ){
-            printf("%8d %8d\n", i, vis[i]);
-        }
+        puts("");
     }
 }
