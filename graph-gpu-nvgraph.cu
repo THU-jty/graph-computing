@@ -60,22 +60,24 @@ void preprocess(dist_graph_t *graph, traverse_type_t traverse_type) {
     cudaMalloc((void**)&pre, sizeof(int)*M );
     cudaMemcpy( v_pos, graph->v_pos, sizeof(int)*N, cudaMemcpyHostToDevice );
     cudaMemcpy( e_dst, graph->e_dst, sizeof(int)*M, cudaMemcpyHostToDevice );
-    cudaMemcpy( e_weight, graph->e_weight, sizeof(float)*M, cudaMemcpyHostToDevice );
+    if( traverse_type == SSSP ){
+        cudaMemcpy( e_weight, graph->e_weight, sizeof(float)*M, cudaMemcpyHostToDevice );
 
-    dim3 grid_size (ceiling(N,T));
-    dim3 block_size (T);
-    preprocess_kernel<<<grid_size, block_size>>>(
-        v_pos, e_dst, in, N
-    );
-    int *a = (int*)malloc( sizeof(int)*N );
-    cudaMemcpy( a, in, sizeof(int)*N, cudaMemcpyDeviceToHost );
-    int sum = 0;
-    for( int i = 0; i < N; i ++ ){
-        int tmp = sum;
-        sum += a[i];
-        a[i] = tmp;
+        dim3 grid_size (ceiling(N,T));
+        dim3 block_size (T);
+        preprocess_kernel<<<grid_size, block_size>>>(
+            v_pos, e_dst, in, N
+        );
+        int *a = (int*)malloc( sizeof(int)*N );
+        cudaMemcpy( a, in, sizeof(int)*N, cudaMemcpyDeviceToHost );
+        int sum = 0;
+        for( int i = 0; i < N; i ++ ){
+            int tmp = sum;
+            sum += a[i];
+            a[i] = tmp;
+        }
+        cudaMemcpy( in, a, sizeof(int)*N, cudaMemcpyHostToDevice );
     }
-    cudaMemcpy( in, a, sizeof(int)*N, cudaMemcpyHostToDevice );
 }
 
 nvGraph_t* create_nvgraph(const dist_graph_t *graph, traverse_type_t traverse_type) {
