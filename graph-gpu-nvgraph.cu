@@ -8,6 +8,7 @@ const char* version_name = "nvGraph";
 int NUM, id;
 int N, M;
 int T = 256;
+int W = 64;
 
 typedef struct {
     nvgraphHandle_t handle;
@@ -193,6 +194,7 @@ __global__ void init_sssp( int *vis, float *ans,
             ans[x] = INFINITY;
             nowq[x] = 0;
         }
+        nxtq[x] = 0;
     }
 }
 
@@ -200,7 +202,7 @@ __global__ void sssp_kernel( int *v_pos, int *e_dst, float *e_weight,
                              int *vis, float *ans,
                              int *nowq,
                              int *in, int *deg, float *buf, int *pre,
-                             int cnt, int N, int *changed )
+                             int cnt, int N, int *changed, int W, int ite )
 {
     int x = threadIdx.x + blockDim.x * blockIdx.x;
     int flag = 0;
@@ -212,7 +214,11 @@ __global__ void sssp_kernel( int *v_pos, int *e_dst, float *e_weight,
         if( nowq[x] == cnt ){
             int begin = v_pos[x];
             int end = v_pos[x+1];
-            for(int e = begin; e < end; ++e) {
+            int num = (end-begin)/W;
+            int ed;
+            if( ite == W-1 ) ed = end;
+            else ed = begin+num*(ite+1);
+            for(int e = begin+num*ite; e < ed; ++e) {
                 int v = e_dst[e];
 				// int myturn = atomicAdd( &lock[v], 1 );
 				// while( turn[v] != myturn ){
@@ -252,7 +258,7 @@ __global__ void sssp_kernel( int *v_pos, int *e_dst, float *e_weight,
 
 __global__ void sssp_reduction( int *vis, float *ans,
                                 int *in, int *deg, float *buf, 
-                                int *pre, int *nowq,
+                                int *pre, int *nowq, int *nxtq,
                                 int N, int cnt )
 {
     int x = threadIdx.x + blockDim.x * blockIdx.x;
@@ -270,7 +276,7 @@ __global__ void sssp_reduction( int *vis, float *ans,
         if( deg[x] != 0 ){
             ans[x] = min;
             vis[x] = fa;
-            nowq[x] = cnt+1;
+            nxtq[x] = cnt+1;
         }
         deg[x] = 0;
     }
@@ -315,11 +321,15 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
                 // }
             // }
             // printf("num %d\n", num);
-
-            sssp_kernel<<<grid_size, block_size>>>(
-                v_pos, e_dst, e_weight, vis, ans,
-                nowq, in, deg, buf, pre, cnt, N, changed
-            );
+            for( int i = 0; i < W; i ++ ){
+                sssp_kernel<<<grid_size, block_size>>>(
+                    v_pos, e_dst, e_weight, vis, ans,
+                    nowq, in, deg, buf, pre, cnt, N, changed, W, i
+                );
+                sssp_reduction<<<grid_size, block_size>>>(
+                    vis, ans, in, deg, buf, pre, nowq, nxtq, N, cnt
+                );
+            }
             //printf("nxtans\n");
             // num = 0;
             // cudaMemcpy( fp, nxtans, sizeof(float)*N, cudaMemcpyDeviceToHost );
@@ -340,16 +350,13 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
             //printf("ite %d %d\n", cnt, tmp);
             cudaMemcpy( changed, &tt, sizeof(int), cudaMemcpyHostToDevice );
 
-            sssp_reduction<<<grid_size, block_size>>>(
-                vis, ans, in, deg, buf, pre, nowq, N, cnt
-            );
-            // int *tq = nowq;
-            // nowq = nxtq;
-            // nxtq = tq;
+            int *tq = nowq;
+            nowq = nxtq;
+            nxtq = tq;
         }while(tmp);
 
         cudaMemcpy(pred, vis, sizeof(int)*N, cudaMemcpyDeviceToHost);
         cudaMemcpy(distance, ans, sizeof(float)*N, cudaMemcpyDeviceToHost);
-        printf("iteration %d\n", cnt);
+        //printf("iteration %d\n", cnt);
     }
 }
