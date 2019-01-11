@@ -641,7 +641,7 @@ void sssp(dist_graph_t *graph, index_t s, index_t* pred, weight_t* distance){
     } while(1);   
     //DEBUG("%d it %d\n", id, ite);
     if( id == 0 ){
-        //printf("iterations %d\n", ite);
+        printf("iterations %d\n", ite);
     }
     //sleep(id*5);
     if( NUM != 1 )

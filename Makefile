@@ -15,9 +15,9 @@ LDFLAGS = -Wall
 LDLIBS = $(LDFLAGS)
 GPULIBS = -L$(CUDAPATH) -L$(CUDAPATH)/stubs -lcuda -lcudart
 
-targets = genstat benchmark-sequential benchmark-load-balance benchmark-gpu-nvgraph
+targets = genstat benchmark-sequential benchmark-load-balance benchmark-gpu-nvgraph benchmark-jty-nvgraph
 commonobj = utils.o benchmark.o
-objects = $(commonobj) graph-sequential.o graph-load-balance.o graph-gpu-nvgraph.o graph-mysssp.o
+objects = $(commonobj) graph-sequential.o graph-load-balance.o graph-gpu-nvgraph.o graph-mysssp.o graph-jty-nvgraph.o
 
 .PHONY : default
 default : all
@@ -48,6 +48,11 @@ benchmark-load-balance : $(commonobj) graph-load-balance.o
 graph-gpu-nvgraph.o : graph-gpu-nvgraph.cu common.h utils.h
 	$(CUDAC) -c $(CUDAFLAGS) $< -o $@
 benchmark-gpu-nvgraph : $(commonobj) graph-gpu-nvgraph.o
+	$(CC) -o $@ $^ $(LDLIBS) $(GPULIBS) -qopenmp -lnvgraph
+
+graph-jty-nvgraph.o : graph-jty-nvgraph.cu common.h utils.h
+	$(CUDAC) -c $(CUDAFLAGS) $< -o $@
+benchmark-jty-nvgraph : $(commonobj) graph-jty-nvgraph.o
 	$(CC) -o $@ $^ $(LDLIBS) $(GPULIBS) -qopenmp -lnvgraph
 
 .PHONY: clean
